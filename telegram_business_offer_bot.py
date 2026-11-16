@@ -46,9 +46,12 @@ bot = Bot(TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # === ИЗМЕНЕНИЕ ДЛЯ ХОСТИНГА (Bothost) ===
-# Используем DATA_DIR, чтобы база данных сохранялась в постоянном хранилище.
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 DB_PATH = os.getenv("OFFERS_DB_PATH", os.path.join(DATA_DIR, "offers.sqlite3"))
+
+# === ID ПРЕМИУМ-ЭМОДЗИ ===
+EMOJI_DIAMOND = '<tg-emoji emoji-id="5318901904686754959">💎</tg-emoji>' # Бриллиант (Gram)
+EMOJI_STAR = '<tg-emoji emoji-id="5462973284096187141">⭐</tg-emoji>'    # Звезда (Stars)
 # =========================================
 
 security_log = logging.getLogger("bot.admin_security")
@@ -388,7 +391,11 @@ def offer_keyboard(offer_id: int):
 
 
 def format_offer(row):
-    currency_label = "Gram" if row["currency"] == "gram" else "Stars"
+    # Определяем, какую картинку и текст ставить в зависимости от валюты
+    if row["currency"] == "gram":
+        price_display = f"{escape(row['price'])} {EMOJI_DIAMOND}"
+    else:
+        price_display = f"{escape(row['price'])} {EMOJI_STAR}"
     
     with connect_db() as con:
         user_row = con.execute("SELECT username FROM users WHERE user_id=?", (row["owner_id"],)).fetchone()
@@ -400,7 +407,7 @@ def format_offer(row):
     return (
         f"Пользователь {escape(buyer_display)}\n"
         f"предлагает\n"
-        f"Вам <b>{escape(row['price'])} {currency_label}</b> за подарок\n"
+        f"Вам <b>{price_display}</b> за подарок\n"
         f"{gift_display}"
     )
 
@@ -845,7 +852,14 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
             await callback.answer("Предложение уже обработано.", show_alert=True)
             return
 
-    currency_label = "Gram" if row["currency"] == "gram" else "Stars"
+    # Выбираем эмодзи для текста и для алерта
+    if row["currency"] == "gram":
+        price_display = f"{escape(row['price'])} {EMOJI_DIAMOND}"
+        price_alert = f"{row['price']} 💎"
+    else:
+        price_display = f"{escape(row['price'])} {EMOJI_STAR}"
+        price_alert = f"{row['price']} ⭐"
+
     gift_display = f"<a href='{escape(row['gift_url'], quote=True)}'>{escape(row['gift_name'])}#{escape(row['gift_number'])}</a>"
 
     # 1. Сначала меняем сообщение в чате
@@ -857,7 +871,7 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
             f"успешно продан!\n\n"
             f"✈️ Передайте подарок\n"
             f"покупателю для зачисления\n"
-            f"<b>{escape(row['price'])} {currency_label}</b>."
+            f"<b>{price_display}</b>."
         )
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="Передать NFT", url=row["gift_url"])
@@ -883,14 +897,14 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
     except TelegramAPIError as exc:
         security_log.warning("Unable to edit business offer %s: %s", offer_id, exc)
 
-    # 2. Показываем нативное всплывающее окно (алерт) в конце
+    # 2. Показываем нативное всплывающее окно (алерт)
     if new_status == "accepted":
         alert_text = (
             f"Предложение о продаже\n"
             f"{row['gift_name']} #{row['gift_number']} успешно\n"
             f"принято.\n\n"
             f"Передайте подарок покупателю\n"
-            f"для зачисления {row['price']} {currency_label} на ваш\n"
+            f"для зачисления {price_alert} на ваш\n"
             f"баланс."
         )
         await callback.answer(alert_text, show_alert=True)
