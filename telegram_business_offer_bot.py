@@ -44,7 +44,12 @@ if not TOKEN:
 
 bot = Bot(TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-DB_PATH = os.getenv("OFFERS_DB_PATH", "offers.sqlite3")
+
+# === ИЗМЕНЕНИЕ ДЛЯ ХОСТИНГА (Bothost) ===
+# Используем DATA_DIR, чтобы база данных сохранялась в постоянном хранилище.
+DATA_DIR = os.environ.get("DATA_DIR", ".")
+DB_PATH = os.getenv("OFFERS_DB_PATH", os.path.join(DATA_DIR, "offers.sqlite3"))
+# =========================================
 
 security_log = logging.getLogger("bot.admin_security")
 logging.basicConfig(level=logging.INFO)
