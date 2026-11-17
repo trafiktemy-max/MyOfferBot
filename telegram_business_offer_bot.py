@@ -473,7 +473,7 @@ def menu_text(section, user_id, username=""):
     if section == "standard":
         return framed("💳 ОБЫЧНАЯ ПОДПИСКА", "Срок: 30 дней\nСтоимость: 5 TON или 6 USDT.\n\nОплата и активация согласовываются с администратором.")
     if section == "protected":
-        return framed("🛡️ ПОДПИСКА С ПОДДЕРЖКОЙ", "Срок: 30 дней\nСтоимость: 10 TON или 11 USDT.\n\nДополнительная поддержка по условиям администратора.")
+        return framed("🛡️ ПОДПИСКА С ПОДДЕРЖКОЙ", "Срок: 30 дней\nСтоимость: 10 TON или 11 USDT.\n\nВ случае заморозки аккаунта переносится подписка.")
     if section == "offers":
         return framed("🎁 OFFERS", "Инструменты для оформления реальных предложений по NFT.\n\n" + ("Доступ активен." if active or user_id in ADMIN_IDS else "🔒 Для доступа необходима подписка."))
     if section == "instructions":
