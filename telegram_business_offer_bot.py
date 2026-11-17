@@ -429,11 +429,23 @@ async def on_business_connection(connection: BusinessConnection):
 
 
 def nav_keyboard(*rows):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=label, callback_data=f"menu:{key}")]
-        for label, key in rows
-    ])
+    buttons = []
 
+    for label, key in rows:
+        if key == "support":
+            button = InlineKeyboardButton(
+                text=label,
+                url="https://t.me/WinterBotSupport"
+            )
+        else:
+            button = InlineKeyboardButton(
+                text=label,
+                callback_data=f"menu:{key}"
+            )
+
+        buttons.append([button])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 MENU_BUTTONS = {
     "main": [("🎁 Offers", "offers"), ("🔐 Управление доступом и инструментами", "access"), ("🆘 Поддержка", "support")],
