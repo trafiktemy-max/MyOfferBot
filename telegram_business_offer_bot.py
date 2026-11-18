@@ -773,17 +773,13 @@ async def make_offer(message: Message):
     if connection.rights else None
     )
     # === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
+# === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
 rights = getattr(connection, "rights", None)
+
 logging.warning(
     "BUSINESS RIGHTS: %s",
     rights.model_dump(exclude_none=False)
     if rights else None
-)
-await notify_offer_owner(
-    owner_id,
-    f"Business enabled: {connection.is_enabled}\n"
-    f"Rights: {rights.model_dump(exclude_none=False) if rights else None}\n"
-    f"Legacy can_reply: {getattr(connection, 'can_reply', None)}"
 )
 
 if rights is not None and not getattr(rights, "can_reply", False):
@@ -792,6 +788,7 @@ if rights is not None and not getattr(rights, "can_reply", False):
         "Разрешите боту отправку сообщений (can_reply) в настройках Telegram Business."
     )
     return
+# ==================================
     # ==================================
 
     with connect_db() as con:
