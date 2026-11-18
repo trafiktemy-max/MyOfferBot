@@ -391,7 +391,6 @@ def offer_keyboard(offer_id: int):
 
 
 def format_offer(row):
-    # Определяем, какую картинку и текст ставить в зависимости от валюты
     if row["currency"] == "gram":
         price_display = f"{escape(row['price'])} {EMOJI_DIAMOND}"
     else:
@@ -430,21 +429,12 @@ async def on_business_connection(connection: BusinessConnection):
 
 def nav_keyboard(*rows):
     buttons = []
-
     for label, key in rows:
         if key == "support":
-            button = InlineKeyboardButton(
-                text=label,
-                url="https://t.me/WinterBotSupport"
-            )
+            button = InlineKeyboardButton(text=label, url="https://t.me/WinterBotSupport")
         else:
-            button = InlineKeyboardButton(
-                text=label,
-                callback_data=f"menu:{key}"
-            )
-
+            button = InlineKeyboardButton(text=label, callback_data=f"menu:{key}")
         buttons.append([button])
-
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 MENU_BUTTONS = {
@@ -774,13 +764,13 @@ async def make_offer(message: Message):
     if not connection.is_enabled or connection.user.id != owner_id:
         await notify_offer_owner(owner_id, "Business-подключение отключено или не принадлежит вам.")
         return
+
+    # === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
     rights = getattr(connection, "rights", None)
     if rights is not None and not getattr(rights, "can_reply", False):
-        await notify_offer_owner(owner_id, "Разрешите боту отправку сообщений (can_reply).")
+        await notify_offer_owner(owner_id, "Разрешите боту отправку сообщений (can_reply) в настройках Telegram Business.")
         return
-    if rights is None and getattr(connection, "can_reply", True) is False:
-        await notify_offer_owner(owner_id, "Разрешите боту отвечать в настройках Telegram Business.")
-        return
+    # ==================================
 
     with connect_db() as con:
         updated = con.execute("""
@@ -864,7 +854,6 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
             await callback.answer("Предложение уже обработано.", show_alert=True)
             return
 
-    # Выбираем эмодзи для текста и для алерта
     if row["currency"] == "gram":
         price_display = f"{escape(row['price'])} {EMOJI_DIAMOND}"
         price_alert = f"{row['price']} 💎"
@@ -874,7 +863,6 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
 
     gift_display = f"<a href='{escape(row['gift_url'], quote=True)}'>{escape(row['gift_name'])}#{escape(row['gift_number'])}</a>"
 
-    # 1. Сначала меняем сообщение в чате
     if new_status == "accepted":
         text = (
             f"<b>Telegram</b>\n"
@@ -909,7 +897,6 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
     except TelegramAPIError as exc:
         security_log.warning("Unable to edit business offer %s: %s", offer_id, exc)
 
-    # 2. Показываем нативное всплывающее окно (алерт)
     if new_status == "accepted":
         alert_text = (
             f"Предложение о продаже\n"
