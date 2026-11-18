@@ -766,29 +766,28 @@ async def make_offer(message: Message):
         return
 
 
-    # === ПРОВЕРКА ПРАВ TELEGRAM BUSINESS ===
+    # === ДИАГНОСТИКА TELEGRAM BUSINESS ===
     rights = getattr(connection, "rights", None)
+
+    if isinstance(rights, dict):
+        rights_data = rights
+    elif rights is not None:
+        rights_data = rights.model_dump(exclude_none=False)
+    else:
+        rights_data = {}
 
     logging.warning(
         "BUSINESS RIGHTS: %s",
-        rights.model_dump(exclude_none=False)
-        if rights else None
+        rights_data
     )
 
     await notify_offer_owner(
         owner_id,
         f"Business enabled: {connection.is_enabled}\n"
-        f"Rights can_reply: {getattr(rights, 'can_reply', None)}\n"
+        f"Rights can_reply: {rights_data.get('can_reply')}\n"
         f"Legacy can_reply: {getattr(connection, 'can_reply', None)}"
     )
-
-    if rights is not None and not getattr(rights, "can_reply", False):
-        await notify_offer_owner(
-            owner_id,
-            "Разрешение can_reply не подтверждено Telegram API."
-        )
-        return
-    # ========================================
+    # =====================================
 
     with connect_db() as con:
         updated = con.execute("""
