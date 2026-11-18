@@ -774,7 +774,11 @@ async def make_offer(message: Message):
     )
     # === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
 rights = getattr(connection, "rights", None)
-
+logging.warning(
+    "BUSINESS RIGHTS: %s",
+    rights.model_dump(exclude_none=False)
+    if rights else None
+)
 await notify_offer_owner(
     owner_id,
     f"Business enabled: {connection.is_enabled}\n"
