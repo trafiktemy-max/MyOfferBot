@@ -765,6 +765,13 @@ async def make_offer(message: Message):
         await notify_offer_owner(owner_id, "Business-подключение отключено или не принадлежит вам.")
         return
 
+
+    logging.info(
+    "Business enabled=%s, rights=%s",
+    connection.is_enabled,
+    connection.rights.model_dump(exclude_none=False)
+    if connection.rights else None
+    )
     # === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
     rights = getattr(connection, "rights", None)
     if rights is not None and not getattr(rights, "can_reply", False):
