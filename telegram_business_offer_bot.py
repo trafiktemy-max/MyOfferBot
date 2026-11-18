@@ -766,30 +766,29 @@ async def make_offer(message: Message):
         return
 
 
-    logging.info(
-    "Business enabled=%s, rights=%s",
-    connection.is_enabled,
-    connection.rights.model_dump(exclude_none=False)
-    if connection.rights else None
+    # === ПРОВЕРКА ПРАВ TELEGRAM BUSINESS ===
+    rights = getattr(connection, "rights", None)
+
+    logging.warning(
+        "BUSINESS RIGHTS: %s",
+        rights.model_dump(exclude_none=False)
+        if rights else None
     )
-    # === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
-# === ИСПРАВЛЕННАЯ ПРОВЕРКА ПРАВ ===
-rights = getattr(connection, "rights", None)
 
-logging.warning(
-    "BUSINESS RIGHTS: %s",
-    rights.model_dump(exclude_none=False)
-    if rights else None
-)
-
-if rights is not None and not getattr(rights, "can_reply", False):
     await notify_offer_owner(
         owner_id,
-        "Разрешите боту отправку сообщений (can_reply) в настройках Telegram Business."
+        f"Business enabled: {connection.is_enabled}\n"
+        f"Rights can_reply: {getattr(rights, 'can_reply', None)}\n"
+        f"Legacy can_reply: {getattr(connection, 'can_reply', None)}"
     )
-    return
-# ==================================
-    # ==================================
+
+    if rights is not None and not getattr(rights, "can_reply", False):
+        await notify_offer_owner(
+            owner_id,
+            "Разрешение can_reply не подтверждено Telegram API."
+        )
+        return
+    # ========================================
 
     with connect_db() as con:
         updated = con.execute("""
