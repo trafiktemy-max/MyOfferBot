@@ -1,1 +1,2 @@
 aiogram==3.13.1
+cryptopay-python-sdk>=0.1.3
