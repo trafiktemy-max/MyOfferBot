@@ -1,7 +1,7 @@
 """
 Telegram Business NFT offer bot.
 Python 3.10+
-Install: pip install -U aiogram
+Install: pip install -U aiogram cryptopay-python-sdk
 """
 
 import asyncio
@@ -31,6 +31,10 @@ from aiogram.types import (
     BusinessConnection,
 )
 
+# === PAYMENT ===
+from crypto_pay_api import CryptoPayAsync, CryptoPayConfig
+from config import STANDARD_PLANS, PROTECTED_PLANS, INSURANCE_TERMS
+
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = {
     int(x.strip())
@@ -42,24 +46,27 @@ if not ADMIN_IDS:
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. PowerShell: $env:BOT_TOKEN='YOUR_TOKEN'")
 
+# === PAYMENT ===
+CRYPTO_PAY_TOKEN = os.getenv("CRYPTO_PAY_TOKEN")
+if not CRYPTO_PAY_TOKEN:
+    raise RuntimeError("CRYPTO_PAY_TOKEN is not set. Get it from @CryptoBot -> /api")
+
 bot = Bot(TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# === ИЗМЕНЕНИЕ ДЛЯ ХОСТИНГА (Bothost) ===
 DATA_DIR = os.environ.get("DATA_DIR", ".")
 DB_PATH = os.getenv("OFFERS_DB_PATH", os.path.join(DATA_DIR, "offers.sqlite3"))
 
-# === ID ПРЕМИУМ-ЭМОДЗИ ===
-EMOJI_DIAMOND = '<tg-emoji emoji-id="5318901904686754959">💎</tg-emoji>' # Бриллиант (Gram)
-EMOJI_STAR = '<tg-emoji emoji-id="5462973284096187141">⭐</tg-emoji>'    # Звезда (Stars)
-EMOJI_GIFT = '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'    # Подарок
-EMOJI_SEND = '<tg-emoji emoji-id="5875465628285931233">✈️</tg-emoji>'    # Самолетик
-# =========================================
+EMOJI_DIAMOND = '<tg-emoji emoji-id="5318901904686754959">💎</tg-emoji>'
+EMOJI_STAR = '<tg-emoji emoji-id="5462973284096187141">⭐</tg-emoji>'
+EMOJI_GIFT = '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'
+EMOJI_SEND = '<tg-emoji emoji-id="5875465628285931233">✈️</tg-emoji>'
 
 security_log = logging.getLogger("bot.admin_security")
 logging.basicConfig(level=logging.INFO)
 _admin_attempts = defaultdict(deque)
 _request_attempts = defaultdict(deque)
+
 
 def rate_limited(uid, category, maximum, seconds):
     now = time.monotonic()
@@ -71,10 +78,12 @@ def rate_limited(uid, category, maximum, seconds):
     q.append(now)
     return False
 
+
 def audit(actor_id, action, target_id=None, details=""):
     with connect_db() as con:
         con.execute("INSERT INTO admin_audit(actor_id,action,target_id,details) VALUES (?,?,?,?)",
                     (actor_id, action, target_id, str(details)[:500]))
+
 
 def admin_only(handler):
     @functools.wraps(handler)
@@ -170,6 +179,29 @@ def init_db():
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # === PAYMENT: добавляем колонку subscription_type, если её нет ===
+        try:
+            con.execute("ALTER TABLE subscriptions ADD COLUMN subscription_type TEXT DEFAULT 'standard'")
+        except sqlite3.OperationalError:
+            pass
+        # === PAYMENT: таблица платежей ===
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                invoice_id INTEGER UNIQUE,
+                plan_key TEXT NOT NULL,
+                plan_type TEXT NOT NULL,
+                amount REAL NOT NULL,
+                asset TEXT NOT NULL DEFAULT 'USDT',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                paid_at TEXT
+            )
+        """)
+        con.execute("CREATE INDEX IF NOT EXISTS idx_payments_user ON payments(user_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_payments_invoice ON payments(invoice_id)")
+        # === конец PAYMENT ===
         con.execute("""
             CREATE TABLE IF NOT EXISTS section_photos (
                 section TEXT PRIMARY KEY,
@@ -230,23 +262,25 @@ def register_user(user):
 
 
 def subscription_status(user_id: int):
+    """Возвращает (active, expiry, type). type = 'standard' или 'protected'."""
     with connect_db() as con:
         row = con.execute(
-            "SELECT expires_at FROM subscriptions WHERE user_id=?",
+            "SELECT expires_at, subscription_type FROM subscriptions WHERE user_id=?",
             (user_id,),
         ).fetchone()
 
     if not row:
-        return False, None
+        return False, None, "standard"
+    sub_type = row["subscription_type"] or "standard"
     if row["expires_at"] is None:
-        return True, None
+        return True, None, sub_type
     try:
         expiry = datetime.fromisoformat(row["expires_at"])
     except ValueError:
-        return False, None
+        return False, None, sub_type
     if expiry.tzinfo is None:
         expiry = expiry.replace(tzinfo=timezone.utc)
-    return expiry > datetime.now(timezone.utc), expiry
+    return expiry > datetime.now(timezone.utc), expiry, sub_type
 
 
 def framed(title: str, body: str) -> str:
@@ -263,6 +297,7 @@ PHOTO_SECTIONS = {
     "referral": "👥 Реферальная система",
     "promo": "🎟️ Промокоды",
 }
+
 
 def photo_for(section):
     with connect_db() as con:
@@ -296,6 +331,7 @@ def admin_keyboard():
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats")],
         [InlineKeyboardButton(text="🖼 Управление фотографиями", callback_data="admin:photos")],
         [InlineKeyboardButton(text="🎟️ Создать промокод", callback_data="admin:promo")],
+        [InlineKeyboardButton(text="💰 Платежи", callback_data="admin:payments")],  # === PAYMENT ===
     ])
 
 
@@ -390,12 +426,12 @@ def offer_keyboard(offer_id: int):
         InlineKeyboardButton(
             text="Отклонить",
             callback_data=f"reject:{offer_id}",
-            icon_custom_emoji_id="5778527486270770928"  # Твой ID для отказа
+            icon_custom_emoji_id="5778527486270770928"
         ),
         InlineKeyboardButton(
             text="Принять",
             callback_data=f"accept:{offer_id}",
-            icon_custom_emoji_id="5776375003280838798"  # Твой ID для принятия
+            icon_custom_emoji_id="5776375003280838798"
         ),
     ]])
 
@@ -405,14 +441,14 @@ def format_offer(row):
         price_display = f"{escape(row['price'])} {EMOJI_DIAMOND}"
     else:
         price_display = f"{escape(row['price'])} {EMOJI_STAR}"
-    
+
     with connect_db() as con:
         user_row = con.execute("SELECT username FROM users WHERE user_id=?", (row["owner_id"],)).fetchone()
         username = user_row["username"] if user_row and user_row["username"] else str(row["owner_id"])
-    
+
     buyer_display = f"@{username}" if username.isdigit() is False else username
     gift_display = f"<a href='{escape(row['gift_url'], quote=True)}'>{escape(row['gift_name'])}#{escape(row['gift_number'])}</a>"
-    
+
     return (
         f"Пользователь {escape(buyer_display)}\n"
         f"предлагает\n"
@@ -447,6 +483,7 @@ def nav_keyboard(*rows):
         buttons.append([button])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
+
 MENU_BUTTONS = {
     "main": [("🎁 Offers", "offers"), ("🔐 Управление доступом и инструментами", "access"), ("🆘 Поддержка", "support")],
     "access": [("⭐ Подписка", "subscription"), ("👥 Реферальная система", "referral"), ("◀️ Главное меню", "main")],
@@ -462,8 +499,17 @@ MENU_BUTTONS = {
 
 
 def menu_text(section, user_id, username=""):
-    active, expiry = subscription_status(user_id)
-    status = ("♾️ Безлимит" if expiry is None else "⭐ Активна до " + expiry.strftime("%d.%m.%Y")) if active else "🔒 Нет активной подписки"
+    active, expiry, sub_type = subscription_status(user_id)
+    if active:
+        if expiry is None:
+            status = "♾️ Безлимит"
+        else:
+            status = "⭐ Активна до " + expiry.strftime("%d.%m.%Y")
+            if sub_type == "protected":
+                status += " (🛡 страховка)"
+    else:
+        status = "🔒 Нет активной подписки"
+
     if section == "main":
         return framed("🎁 ГЛАВНОЕ МЕНЮ", "Выберите раздел.\n\n" + status)
     if section == "access":
@@ -471,9 +517,23 @@ def menu_text(section, user_id, username=""):
     if section == "subscription":
         return framed("⭐ ПОДПИСКА", "Выберите тариф или активируйте промокод.\n\n" + status)
     if section == "standard":
-        return framed("💳 ОБЫЧНАЯ ПОДПИСКА", "Срок: 30 дней\nСтоимость: 5 TON или 6 USDT.\n\nОплата и активация согласовываются с администратором.")
+        # === PAYMENT: показываем тарифы и кнопки покупки ===
+        lines = ["<b>💳 ОБЫЧНАЯ ПОДПИСКА</b>", ""]
+        for key, plan in STANDARD_PLANS.items():
+            lines.append(f"• {plan['label']}")
+        lines.append("")
+        lines.append("Оплата в USDT через CryptoBot.")
+        lines.append("После оплаты подписка активируется автоматически.")
+        return framed("💳 ОБЫЧНАЯ ПОДПИСКА", "\n".join(lines))
     if section == "protected":
-        return framed("🛡️ ПОДПИСКА С ПОДДЕРЖКОЙ", "Срок: 30 дней\nСтоимость: 10 TON или 11 USDT.\n\nВ случае заморозки аккаунта переносится подписка.")
+        # === PAYMENT: показываем тарифы страховки ===
+        lines = ["<b>🛡 ПОДПИСКА СО СТРАХОВКОЙ</b>", ""]
+        for key, plan in PROTECTED_PLANS.items():
+            lines.append(f"• {plan['label']}")
+        lines.append("")
+        lines.append("Оплата в USDT через CryptoBot.")
+        lines.append("Страховка покрывает заморозку аккаунта (подробности ниже).")
+        return framed("🛡 ПОДПИСКА СО СТРАХОВКОЙ", "\n".join(lines))
     if section == "offers":
         return framed("🎁 OFFERS", "Инструменты для оформления реальных предложений по NFT.\n\n" + ("Доступ активен." if active or user_id in ADMIN_IDS else "🔒 Для доступа необходима подписка."))
     if section == "instructions":
@@ -493,7 +553,30 @@ async def show_menu(chat_id, section, user_id):
     if section not in MENU_BUTTONS:
         section = "main"
     me = await bot.get_me() if section == "referral" else None
-    await send_section(chat_id, section, menu_text(section, user_id, me.username if me else ""), nav_keyboard(*MENU_BUTTONS[section]))
+    reply = nav_keyboard(*MENU_BUTTONS[section])
+
+    # === PAYMENT: для разделов standard/protected добавляем кнопки тарифов ===
+    if section == "standard":
+        rows = []
+        for key, plan in STANDARD_PLANS.items():
+            rows.append([InlineKeyboardButton(
+                text=plan["label"],
+                callback_data=f"buy:standard:{key}"
+            )])
+        rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:subscription")])
+        reply = InlineKeyboardMarkup(inline_keyboard=rows)
+    elif section == "protected":
+        rows = []
+        for key, plan in PROTECTED_PLANS.items():
+            rows.append([InlineKeyboardButton(
+                text=plan["label"],
+                callback_data=f"buy:protected:{key}"
+            )])
+        rows.append([InlineKeyboardButton(text="◀️ Назад", callback_data="menu:subscription")])
+        reply = InlineKeyboardMarkup(inline_keyboard=rows)
+    # === конец PAYMENT ===
+
+    await send_section(chat_id, section, menu_text(section, user_id, me.username if me else ""), reply)
 
 
 @dp.message(Command("start"))
@@ -515,12 +598,293 @@ async def menu_actions(callback: CallbackQuery):
     register_user(callback.from_user)
     section = callback.data.split(":", 1)[1]
     if section == "instructions":
-        active, _ = subscription_status(callback.from_user.id)
+        active, _, _ = subscription_status(callback.from_user.id)
         if not active and callback.from_user.id not in ADMIN_IDS:
             await callback.answer("🔒 Для доступа к Offers необходима подписка.", show_alert=True)
             return
     await show_menu(callback.message.chat.id, section, callback.from_user.id)
     await callback.answer()
+
+
+# === PAYMENT: обработчики покупки ===
+
+async def create_crypto_invoice(user_id: int, plan_key: str, plan_type: str):
+    """Создаёт счёт в CryptoBot и сохраняет в БД. Возвращает (invoice_id, pay_url) или (None, None)."""
+    if plan_type == "standard":
+        plan = STANDARD_PLANS.get(plan_key)
+    else:
+        plan = PROTECTED_PLANS.get(plan_key)
+    if not plan:
+        return None, None
+
+    cfg = CryptoPayConfig(token=CRYPTO_PAY_TOKEN)
+    async with CryptoPayAsync(cfg) as cp:
+        try:
+            invoice = await cp.create_invoice(
+                asset="USDT",
+                amount=plan["price"],
+                description=f"Подписка {plan['label']}",
+                payload=f"sub:{user_id}:{plan_type}:{plan_key}",
+                expires_in=3600,
+            )
+            invoice_id = invoice["invoice_id"]
+            pay_url = invoice["pay_url"]
+            with connect_db() as con:
+                con.execute("""
+                    INSERT INTO payments(user_id, invoice_id, plan_key, plan_type, amount, asset, status)
+                    VALUES (?, ?, ?, ?, ?, 'USDT', 'active')
+                """, (user_id, invoice_id, plan_key, plan_type, plan["price"]))
+                con.commit()
+            return invoice_id, pay_url
+        except Exception as e:
+            security_log.exception("Failed to create invoice: %s", e)
+            return None, None
+
+
+async def check_invoice_status(invoice_id: int):
+    """Проверяет статус счёта в CryptoBot. Возвращает статус или None."""
+    cfg = CryptoPayConfig(token=CRYPTO_PAY_TOKEN)
+    async with CryptoPayAsync(cfg) as cp:
+        try:
+            invoices = await cp.get_invoices(invoice_ids=[invoice_id])
+            if not invoices:
+                return None
+            return invoices[0].get("status")
+        except Exception as e:
+            security_log.exception("Failed to check invoice: %s", e)
+            return None
+
+
+async def activate_subscription(user_id: int, plan_key: str, plan_type: str, invoice_id: int):
+    """Активирует подписку после подтверждения оплаты. Защита от повторной обработки через invoice_id."""
+    with connect_db() as con:
+        # Проверяем, не обработан ли уже этот счёт
+        payment = con.execute(
+            "SELECT status FROM payments WHERE invoice_id=?", (invoice_id,)
+        ).fetchone()
+        if not payment or payment["status"] == "paid":
+            return False
+
+        # Определяем план
+        if plan_type == "standard":
+            plan = STANDARD_PLANS.get(plan_key)
+        else:
+            plan = PROTECTED_PLANS.get(plan_key)
+        if not plan:
+            return False
+
+        days = plan["days"]
+
+        # Получаем текущую подписку
+        current = con.execute(
+            "SELECT expires_at, subscription_type FROM subscriptions WHERE user_id=?",
+            (user_id,),
+        ).fetchone()
+
+        base = datetime.now(timezone.utc)
+        current_type = "standard"
+
+        if current and current["expires_at"]:
+            try:
+                old = datetime.fromisoformat(current["expires_at"].replace("Z", "+00:00"))
+                if old.tzinfo is None:
+                    old = old.replace(tzinfo=timezone.utc)
+                base = max(base, old)
+                current_type = current["subscription_type"] or "standard"
+            except ValueError:
+                pass
+
+        # Логика перехода: если текущая подписка standard, а покупаем protected — заменяем тип
+        # Если текущая protected, а покупаем standard — тип остаётся protected (не понижаем)
+        new_type = plan_type
+        if current_type == "protected" and plan_type == "standard":
+            new_type = "protected"
+
+        new_expiry = (base + timedelta(days=days)).isoformat()
+
+        con.execute("""
+            INSERT INTO subscriptions(user_id, expires_at, granted_by, subscription_type)
+            VALUES (?, ?, 0, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                expires_at=excluded.expires_at,
+                granted_by=excluded.granted_by,
+                subscription_type=excluded.subscription_type,
+                updated_at=CURRENT_TIMESTAMP
+        """, (user_id, new_expiry, new_type))
+
+        con.execute("""
+            UPDATE payments SET status='paid', paid_at=CURRENT_TIMESTAMP
+            WHERE invoice_id=?
+        """, (invoice_id,))
+        con.commit()
+
+    return True
+
+
+@dp.callback_query(F.data.startswith("buy:"))
+async def buy_subscription(callback: CallbackQuery):
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer("Некорректный тариф.", show_alert=True)
+        return
+
+    plan_type = parts[1]
+    plan_key = parts[2]
+    user_id = callback.from_user.id
+
+    if plan_type == "standard":
+        plan = STANDARD_PLANS.get(plan_key)
+    else:
+        plan = PROTECTED_PLANS.get(plan_key)
+
+    if not plan:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    # Показываем условия страховки перед оплатой
+    if plan_type == "protected":
+        text = (
+            f"<b>🛡 ПОДПИСКА СО СТРАХОВКОЙ</b>\n\n"
+            f"<b>Тариф:</b> {plan['label']}\n\n"
+            f"{INSURANCE_TERMS}\n\n"
+            f"<b>Оплата в USDT через CryptoBot.</b>"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить", callback_data=f"pay:{plan_type}:{plan_key}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:protected")],
+        ])
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+        await callback.answer()
+        return
+
+    # Для обычной подписки сразу создаём счёт
+    await callback.answer("Создаю счёт...")
+    invoice_id, pay_url = await create_crypto_invoice(user_id, plan_key, plan_type)
+    if not invoice_id:
+        await callback.message.edit_text(
+            "❌ Не удалось создать счёт. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:standard")]
+            ])
+        )
+        return
+
+    text = (
+        f"<b>💳 СЧЁТ НА ОПЛАТУ</b>\n\n"
+        f"<b>Тариф:</b> {plan['label']}\n"
+        f"<b>Сумма:</b> {plan['price']} USDT\n\n"
+        f"Нажмите «Оплатить» и оплатите счёт в CryptoBot.\n"
+        f"После оплаты нажмите «Проверить оплату»."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
+        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check:{invoice_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:standard")],
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("pay:"))
+async def pay_protected(callback: CallbackQuery):
+    """Создание счёта для страховочной подписки после ознакомления с условиями."""
+    parts = callback.data.split(":")
+    plan_type = parts[1]
+    plan_key = parts[2]
+    user_id = callback.from_user.id
+
+    plan = PROTECTED_PLANS.get(plan_key)
+    if not plan:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+
+    await callback.answer("Создаю счёт...")
+    invoice_id, pay_url = await create_crypto_invoice(user_id, plan_key, plan_type)
+    if not invoice_id:
+        await callback.message.edit_text(
+            "❌ Не удалось создать счёт. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:protected")]
+            ])
+        )
+        return
+
+    text = (
+        f"<b>🛡 СЧЁТ НА ОПЛАТУ (СТРАХОВКА)</b>\n\n"
+        f"<b>Тариф:</b> {plan['label']}\n"
+        f"<b>Сумма:</b> {plan['price']} USDT\n\n"
+        f"Нажмите «Оплатить» и оплатите счёт в CryptoBot.\n"
+        f"После оплаты нажмите «Проверить оплату»."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить", url=pay_url)],
+        [InlineKeyboardButton(text="🔄 Проверить оплату", callback_data=f"check:{invoice_id}")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="menu:protected")],
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("check:"))
+async def check_payment(callback: CallbackQuery):
+    invoice_id = int(callback.data.split(":")[1])
+    user_id = callback.from_user.id
+
+    await callback.answer("Проверяю...")
+
+    # Проверяем, что счёт принадлежит этому пользователю
+    with connect_db() as con:
+        payment = con.execute(
+            "SELECT user_id, plan_key, plan_type, status FROM payments WHERE invoice_id=?",
+            (invoice_id,),
+        ).fetchone()
+
+    if not payment or payment["user_id"] != user_id:
+        await callback.message.edit_text("❌ Счёт не найден или принадлежит другому пользователю.")
+        return
+
+    if payment["status"] == "paid":
+        await callback.message.edit_text("✅ Этот счёт уже оплачен.")
+        return
+
+    status = await check_invoice_status(invoice_id)
+    if status is None:
+        await callback.message.edit_text("❌ Не удалось проверить статус. Попробуйте позже.")
+        return
+
+    if status == "paid":
+        ok = await activate_subscription(user_id, payment["plan_key"], payment["plan_type"], invoice_id)
+        if ok:
+            # Уведомляем пользователя
+            active, expiry, sub_type = subscription_status(user_id)
+            exp_str = expiry.strftime("%d.%m.%Y %H:%M") if expiry else "безлимит"
+            type_label = "🛡 со страховкой" if sub_type == "protected" else "обычная"
+            await callback.message.edit_text(
+                f"✅ <b>Оплата получена!</b>\n\n"
+                f"Подписка активирована.\n"
+                f"Тип: {type_label}\n"
+                f"Действует до: {exp_str}",
+                parse_mode="HTML",
+            )
+            # Уведомляем админов
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"💰 <b>Новая покупка подписки</b>\n"
+                        f"Пользователь: <code>{user_id}</code>\n"
+                        f"Тариф: {payment['plan_key']} ({payment['plan_type']})\n"
+                        f"Сумма: {payment['amount'] if 'amount' in payment.keys() else '?'} USDT",
+                        parse_mode="HTML",
+                    )
+                except TelegramAPIError:
+                    pass
+        else:
+            await callback.message.edit_text("⚠️ Платёж уже был обработан ранее.")
+    elif status == "expired":
+        await callback.message.edit_text("❌ Счёт истёк. Создайте новый.")
+    else:
+        await callback.message.edit_text("⏳ Оплата ещё не поступила. Попробуйте позже.")
+
+# === конец PAYMENT ===
 
 
 @dp.message(Command("redeem"))
@@ -546,7 +910,7 @@ async def redeem_promo(message: Message, command: CommandObject):
             outcome = "Промокод недействителен, исчерпан или уже использован."
             con.rollback()
         else:
-            current = con.execute("SELECT expires_at FROM subscriptions WHERE user_id=?", (uid,)).fetchone()
+            current = con.execute("SELECT expires_at, subscription_type FROM subscriptions WHERE user_id=?", (uid,)).fetchone()
             if current is not None and current["expires_at"] is None:
                 outcome = "У тебя уже безлимитная подписка."
                 con.rollback()
@@ -561,12 +925,13 @@ async def redeem_promo(message: Message, command: CommandObject):
                     except ValueError:
                         pass
                 expiry = (base + timedelta(days=row["days"])).isoformat()
+                sub_type = (current["subscription_type"] if current else None) or "standard"
                 con.execute("INSERT INTO promo_redemptions(user_id,code) VALUES (?,?)", (uid, code))
                 updated = con.execute("UPDATE promo_codes SET uses=uses+1 WHERE code=? AND uses<max_uses", (code,))
                 if updated.rowcount != 1:
                     raise sqlite3.IntegrityError("Promo limit reached")
-                con.execute("""INSERT INTO subscriptions(user_id,expires_at,granted_by) VALUES (?,?,0)
-                    ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, updated_at=CURRENT_TIMESTAMP""", (uid, expiry))
+                con.execute("""INSERT INTO subscriptions(user_id,expires_at,granted_by,subscription_type) VALUES (?,?,0,?)
+                    ON CONFLICT(user_id) DO UPDATE SET expires_at=excluded.expires_at, subscription_type=excluded.subscription_type, updated_at=CURRENT_TIMESTAMP""", (uid, expiry, sub_type))
                 con.commit()
                 outcome = f"✅ Промокод активирован: +{row['days']} дней подписки."
     except sqlite3.Error:
@@ -607,7 +972,7 @@ async def info(message: Message, command: CommandObject):
         await message.answer("Слишком много запросов /info. Попробуй позже.")
         return
 
-    active, _ = subscription_status(message.from_user.id)
+    active, _, _ = subscription_status(message.from_user.id)
     if not active and message.from_user.id not in ADMIN_IDS:
         await message.answer(
             framed("⭐ НУЖНА ПОДПИСКА", "Для создания офферов нужна активная подписка. Обратись к администратору."),
@@ -738,7 +1103,7 @@ async def make_offer(message: Message):
         await notify_offer_owner(owner_id, "Слишком много предложений. Попробуйте позже.")
         return
 
-    owner_active, _ = subscription_status(owner_id)
+    owner_active, _, _ = subscription_status(owner_id)
     if not owner_active and owner_id not in ADMIN_IDS:
         await notify_offer_owner(owner_id, "Подписка неактивна. Отправка предложения недоступна.")
         return
@@ -983,10 +1348,35 @@ async def admin_actions(callback: CallbackQuery, state: FSMContext):
             parse_mode="HTML",
         )
 
+    # === PAYMENT: история платежей и статистика ===
+    elif action == "payments":
+        with connect_db() as con:
+            rows = con.execute("""
+                SELECT user_id, plan_key, plan_type, amount, status, created_at, paid_at
+                FROM payments ORDER BY created_at DESC LIMIT 50
+            """).fetchall()
+
+        if not rows:
+            body = "Платежей пока нет."
+        else:
+            lines = []
+            for r in rows:
+                lines.append(
+                    f"• user <code>{r['user_id']}</code> | {r['plan_type']} {r['plan_key']} | "
+                    f"{r['amount']} USDT | {r['status']}"
+                )
+            body = "\n".join(lines)
+        await callback.message.answer(
+            framed("💰 ИСТОРИЯ ПЛАТЕЖЕЙ", body),
+            parse_mode="HTML",
+            reply_markup=admin_keyboard(),
+        )
+    # === конец PAYMENT ===
+
     elif action == "users":
         with connect_db() as con:
             rows = con.execute("""
-                SELECT u.user_id, u.first_name, u.username, s.expires_at, s.user_id AS sub_uid
+                SELECT u.user_id, u.first_name, u.username, s.expires_at, s.subscription_type, s.user_id AS sub_uid
                 FROM users u LEFT JOIN subscriptions s ON s.user_id=u.user_id
                 ORDER BY u.created_at DESC LIMIT 30
             """).fetchall()
@@ -1004,6 +1394,8 @@ async def admin_actions(callback: CallbackQuery, state: FSMContext):
                     try:
                         exp = datetime.fromisoformat(row["expires_at"])
                         sub = "⭐ до " + exp.strftime("%d.%m.%Y")
+                        if row["subscription_type"] == "protected":
+                            sub += " 🛡"
                         if exp <= datetime.now(timezone.utc):
                             sub = "⌛ истекла"
                     except ValueError:
@@ -1024,12 +1416,28 @@ async def admin_actions(callback: CallbackQuery, state: FSMContext):
                 SELECT COUNT(*) FROM subscriptions
                 WHERE expires_at IS NULL OR expires_at > ?
             """, (datetime.now(timezone.utc).isoformat(),)).fetchone()[0]
+            # === PAYMENT: статистика по типам ===
+            standard_subs = con.execute("""
+                SELECT COUNT(*) FROM subscriptions
+                WHERE (expires_at IS NULL OR expires_at > ?)
+                AND (subscription_type IS NULL OR subscription_type='standard')
+            """, (datetime.now(timezone.utc).isoformat(),)).fetchone()[0]
+            protected_subs = con.execute("""
+                SELECT COUNT(*) FROM subscriptions
+                WHERE (expires_at IS NULL OR expires_at > ?)
+                AND subscription_type='protected'
+            """, (datetime.now(timezone.utc).isoformat(),)).fetchone()[0]
+            total_paid = con.execute("SELECT COALESCE(SUM(amount), 0) FROM payments WHERE status='paid'").fetchone()[0]
+            # === конец PAYMENT ===
         await callback.message.answer(
             framed(
                 "📊 СТАТИСТИКА",
                 f"Пользователей: <b>{users_count}</b>\n"
                 f"Офферов: <b>{offers_count}</b>\n"
-                f"Активных подписок: <b>{active_subs}</b>",
+                f"Активных подписок: <b>{active_subs}</b>\n"
+                f"  • обычных: <b>{standard_subs}</b>\n"
+                f"  • со страховкой: <b>{protected_subs}</b>\n"
+                f"Оплачено USDT: <b>{total_paid}</b>",
             ),
             parse_mode="HTML",
             reply_markup=admin_keyboard(),
@@ -1191,8 +1599,8 @@ async def grant_subscription(message: Message, state: FSMContext):
 
     with connect_db() as con:
         con.execute("""
-            INSERT INTO subscriptions(user_id, expires_at, granted_by)
-            VALUES (?, ?, ?)
+            INSERT INTO subscriptions(user_id, expires_at, granted_by, subscription_type)
+            VALUES (?, ?, ?, 'standard')
             ON CONFLICT(user_id) DO UPDATE SET
                 expires_at=excluded.expires_at,
                 granted_by=excluded.granted_by,
