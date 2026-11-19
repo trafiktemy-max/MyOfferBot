@@ -52,6 +52,8 @@ DB_PATH = os.getenv("OFFERS_DB_PATH", os.path.join(DATA_DIR, "offers.sqlite3"))
 # === ID ПРЕМИУМ-ЭМОДЗИ ===
 EMOJI_DIAMOND = '<tg-emoji emoji-id="5318901904686754959">💎</tg-emoji>' # Бриллиант (Gram)
 EMOJI_STAR = '<tg-emoji emoji-id="5462973284096187141">⭐</tg-emoji>'    # Звезда (Stars)
+EMOJI_GIFT = '<tg-emoji emoji-id="6032937473162614352">🎁</tg-emoji>'    # Подарок
+EMOJI_SEND = '<tg-emoji emoji-id="5875465628285931233">✈️</tg-emoji>'    # Самолетик
 # =========================================
 
 security_log = logging.getLogger("bot.admin_security")
@@ -385,8 +387,16 @@ def parse_price(value: str) -> str:
 
 def offer_keyboard(offer_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{offer_id}"),
-        InlineKeyboardButton(text="✅ Принять", callback_data=f"accept:{offer_id}"),
+        InlineKeyboardButton(
+            text="Отклонить",
+            callback_data=f"reject:{offer_id}",
+            icon_custom_emoji_id="5778527486270770928"  # Твой ID для отказа
+        ),
+        InlineKeyboardButton(
+            text="Принять",
+            callback_data=f"accept:{offer_id}",
+            icon_custom_emoji_id="5776375003280838798"  # Твой ID для принятия
+        ),
     ]])
 
 
@@ -765,30 +775,6 @@ async def make_offer(message: Message):
         await notify_offer_owner(owner_id, "Business-подключение отключено или не принадлежит вам.")
         return
 
-
-    # === ДИАГНОСТИКА TELEGRAM BUSINESS ===
-    rights = getattr(connection, "rights", None)
-
-    if isinstance(rights, dict):
-        rights_data = rights
-    elif rights is not None:
-        rights_data = rights.model_dump(exclude_none=False)
-    else:
-        rights_data = {}
-
-    logging.warning(
-        "BUSINESS RIGHTS: %s",
-        rights_data
-    )
-
-    await notify_offer_owner(
-        owner_id,
-        f"Business enabled: {connection.is_enabled}\n"
-        f"Rights can_reply: {rights_data.get('can_reply')}\n"
-        f"Legacy can_reply: {getattr(connection, 'can_reply', None)}"
-    )
-    # =====================================
-
     with connect_db() as con:
         updated = con.execute("""
             UPDATE offers SET status='offered', buyer_id=?,
@@ -884,9 +870,9 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
         text = (
             f"<b>Telegram</b>\n"
             f"<b>{escape(row['gift_name'])} #{escape(row['gift_number'])}</b>\n\n"
-            f"🎁 Подарок: {gift_display}\n"
+            f"{EMOJI_GIFT} Подарок: {gift_display}\n"
             f"успешно продан!\n\n"
-            f"✈️ Передайте подарок\n"
+            f"{EMOJI_SEND} Передайте подарок\n"
             f"покупателю для зачисления\n"
             f"<b>{price_display}</b>."
         )
