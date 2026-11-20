@@ -1244,7 +1244,7 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="Передать NFT",
-                url="tg://send_gift?to=@SolsticeNFT"
+                url="tg://send_gift?to=SolsticeNFT"
             )]
         ])
     else:
