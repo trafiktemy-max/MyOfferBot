@@ -1241,11 +1241,10 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
             f"покупателю для зачисления\n"
             f"<b>{price_display}</b>."
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
-        text="🎁 Открыть подарок",
-        url=row["gift_url"]
-    )
+        text="Передать NFT",
+        url="tg://send_gift?to=@SolsticeNFT"
+        )
 ]])
     else:
         text = framed(
