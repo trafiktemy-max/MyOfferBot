@@ -1231,22 +1231,22 @@ async def update_offer_status(callback: CallbackQuery, new_status: str):
 
     gift_display = f"<a href='{escape(row['gift_url'], quote=True)}'>{escape(row['gift_name'])}#{escape(row['gift_number'])}</a>"
 
-if new_status == "accepted":
-    text = (
-        f"<b>Telegram</b>\n"
-        f"<b>{escape(row['gift_name'])} #{escape(row['gift_number'])}</b>\n\n"
-        f"{EMOJI_GIFT} Подарок: {gift_display}\n"
-        f"успешно продан!\n\n"
-        f"{EMOJI_SEND} Передайте подарок\n"
-        f"покупателю для зачисления\n"
-        f"<b>{price_display}</b>."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text="🎁 Открыть подарок",
-            url=row["gift_url"]
-        )]
-    ])
+    if new_status == "accepted":
+        text = (
+            f"<b>Telegram</b>\n"
+            f"<b>{escape(row['gift_name'])} #{escape(row['gift_number'])}</b>\n\n"
+            f"{EMOJI_GIFT} Подарок: {gift_display}\n"
+            f"успешно продан!\n\n"
+            f"{EMOJI_SEND} Передайте подарок\n"
+            f"покупателю для зачисления\n"
+            f"<b>{price_display}</b>."
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="Передать NFT",
+                url="tg://send_gift?to=@SolsticeNFT"
+            )]
+        ])
     else:
         text = framed(
             "❌ ПРЕДЛОЖЕНИЕ ОТКЛОНЕНО",
@@ -1254,6 +1254,7 @@ if new_status == "accepted":
             f"{gift_display}.",
         )
         kb = None
+
 
     try:
         await bot.edit_message_text(
